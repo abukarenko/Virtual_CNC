@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>../../assets/VirtualCNC.ico</ApplicationIcon>
+    <Product>Virtual CNC</Product>
+    <Title>Virtual CNC — GRBL 1.1f Simulator</Title>
+    <Description>Virtual three-axis CNC controller with GRBL 1.1f protocol</Description>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../VirtualCnc.Core/VirtualCnc.Core.csproj" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.0" />
+    <EmbeddedResource Include="../../assets/VirtualCNC.ico" LogicalName="VirtualCnc.App.Icon.ico" />
+  </ItemGroup>
+</Project>

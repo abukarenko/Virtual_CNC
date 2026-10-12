@@ -1,0 +1,25 @@
+name: Build and test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build portable executable and run checks
+        shell: pwsh
+        run: ./scripts/Build-Portable.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VirtualCNC-win-x64
+          path: VirtualCNC.exe

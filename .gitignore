@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+.vs/
+data/
+artifacts/
+VirtualCNC.exe
+*.user
+
+desktop.ini
+Thumbs.db
+VirtualCNC*.exe

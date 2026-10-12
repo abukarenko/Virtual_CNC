@@ -1,0 +1,3 @@
+[submodule "vendor/grbl"]
+	path = vendor/grbl
+	url = https://github.com/gnea/grbl.git
