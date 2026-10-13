@@ -126,7 +126,7 @@ public sealed partial class GrblController
         if (nonModal == 4) { Require(Has('P'), 28); Use('P'); }
         if (axisCommand == 3 && m.ToolLengthMode == 431) Require(axes.Length == 1 && axes[0] == 'Z', 37);
         if (m.Motion == 80) Require(axes.Length == 0, 31);
-        var coordinate = Memory.Coordinates[m.Coordinate - 54];
+        var coordinate = ActiveCoordinate(m.Coordinate - 54);
         var target = m.Position;
         var values = new Vec(Word('X') * factor, Word('Y') * factor, Word('Z') * factor);
         for (int i = 0; i < 3; i++)

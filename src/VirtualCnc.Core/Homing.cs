@@ -12,11 +12,22 @@ public sealed partial class GrblController
         public int ContactMask;
     }
     private HomingCycle? homing;
-    private string homingLimits = "";
-    private string EffectiveLimits => string.Concat("XYZ".Where(c => limits.Contains(c) || homingLimits.Contains(c)));
+    private string homingLimits = "", travelLimits = "";
+    private string EffectiveLimits => string.Concat("XYZ".Where(c => limits.Contains(c) || homingLimits.Contains(c) || travelLimits.Contains(c)));
 
+    private bool UpdateTravelLimits()
+    {
+        var before=EffectiveLimits;
+        var physical=PhysicalPosition;
+        travelLimits=string.Concat(Enumerable.Range(0,3).Where(i=>physical[i]>1e-9 || physical[i]<-Setting(130+i)-1e-9).Select(i=>"XYZ"[i]));
+        var after=EffectiveLimits;
+        if(before!=after) LimitsChanged?.Invoke(after);
+        if(travelLimits.Length>0 && Setting(21)!=0 && state is not ("Home" or "Alarm")) {Alarm(1);return true;}
+        return false;
+    }
     private void BeginHoming()
     {
+        position=PhysicalPosition;physicalOffset=default;
         state = "Home"; currentFeed = velocity = actualSpeed = 0;
         actualSpindle = 5; actualCoolant = 0;
         homing = new(); homingLimits = "";
@@ -57,7 +68,7 @@ public sealed partial class GrblController
                     if (cycle.Mask == 4) { cycle.Mask = 3; BeginHomePhase(HomePhase.Seek); }
                     else
                     {
-                        homing = null; homingLimits = ""; modal.Position = position;
+                        homing = null; homingLimits = ""; awaitingInitialHome=false; modal.Position = position;
                         state = "Idle"; statusCounter=0; RunStartup(); CompleteAck(); return;
                     }
                 }
@@ -96,7 +107,7 @@ public sealed partial class GrblController
             }
             // Keep sub-step progress internally so low homing feed cannot stall on rounding.
             cycle.Continuous=continuous;
-            position=Quantize(continuous);
+            position=Quantize(continuous); UpdateTravelLimits();
             if (continuous != previousPosition) PositionChanged?.Invoke(position);
             seconds-=stepTime;
             currentFeed=stepTime>0 ? (continuous-previousPosition).Length/stepTime*60 : 0;

@@ -15,15 +15,18 @@ public sealed partial class GrblController
     private readonly StringBuilder line = new();
     private Modal modal = new();
     private Vec position, probePosition;
+    private Vec physicalOffset;
+    private Vec PhysicalPosition => position + physicalOffset;
     private bool comment, semicolon, overflow, check, probeSuccess, booted, spindleStop, deferredAck;
     private string? pending;
     private string state = "Idle", limits = "";
     private int feedOverride = 100, rapidOverride = 100, spindleOverride = 100, statusCounter;
     private int actualSpindle = 5, actualCoolant;
     private double actualSpeed, currentFeed, velocity;
-    private bool laserMotion;
+    private bool laserMotion, awaitingInitialHome;
     private bool probePin, doorPin;
     private double? probePlane;
+    private bool materialProbeEnabled;
     public bool EnableMist { get; }
     public bool HomingSwitchContact { get; set; } = true;
     public double TimeScale { get; set; } = 1;
@@ -42,7 +45,8 @@ public sealed partial class GrblController
     }
     private double Setting(int key) => Memory.Settings[key];
     private bool Inches => Setting(13) != 0;
-    private Vec Wco => Memory.Coordinates[modal.Coordinate - 54] + modal.Offset + new Vec(0, 0, modal.ToolLength);
+    private Vec ActiveCoordinate(int index) => awaitingInitialHome ? default : Memory.Coordinates[index];
+    private Vec Wco => ActiveCoordinate(modal.Coordinate - 54) + modal.Offset + new Vec(0, 0, modal.ToolLength);
     private void Emit(string text) => Output?.Invoke(text);
     private void Reply(int error = 0) => Emit(error == 0 ? "ok" : $"error:{error}");
     private void Save() => store.Save(Memory);
@@ -61,6 +65,7 @@ public sealed partial class GrblController
     {
         lock (gate)
         {
+            if(!booted) {position=default;awaitingInitialHome=Memory.TableWorkOriginInitialized;physicalOffset=awaitingInitialHome ? new(-Setting(130)/2,-Setting(131)/2,-Setting(132)/2) : default;}
             Reset(false, true);
             if (MemoryWarning is not null) { Reply(7); foreach (var setting in Memory.Settings) EmitSetting(setting.Key, setting.Value); }
             booted = true;
@@ -71,8 +76,9 @@ public sealed partial class GrblController
     {
         lock(gate)
         {
+            physicalOffset=Memory.TableWorkOriginInitialized ? PhysicalPosition : default;
             position=probePosition=default;probeSuccess=false;state="Idle";statusCounter=0;
-            Reset(false,true);booted=true;PositionChanged?.Invoke(position);
+            travelLimits="";awaitingInitialHome=Memory.TableWorkOriginInitialized;Reset(false,true);booted=true;PositionChanged?.Invoke(position);
         }
     }
     private void Reset(bool interrupted, bool cold = false)
@@ -330,6 +336,8 @@ public sealed partial class GrblController
         if (id is 4 or 5 or 6 or 13 or 20 or 21 or 22 or 32) value = (int)value != 0 ? 1 : 0;
         else if (id == 26) value = (ushort)(int)value;
         else if (id is 0 or 1 or 2 or 3 or 10 or 23) value = (byte)(int)value;
+        if(awaitingInitialHome && id is >=130 and <=132)
+            physicalOffset=physicalOffset.With(id-130,Setting(id)>0 ? physicalOffset[id-130]*value/Setting(id) : -value/2);
         Memory.Settings[id] = value;
         if (id == 22 && value == 0) Memory.Settings[20] = 0;
         Save();
@@ -362,7 +370,7 @@ public sealed partial class GrblController
             var text = new StringBuilder($"<{state}|{(mask.HasFlag(1) ? "MPos" : "WPos")}:{(mask.HasFlag(1) ? position : position - Wco).Format(Inches)}");
             if (mask.HasFlag(2)) text.Append($"|Bf:{PlannerCapacity - planner.Count},{ReceiveCapacity - receive.Count}");
             text.Append($"|FS:{(currentFeed / (Inches ? 25.4 : 1)).ToString(Inches ? "F1" : "F0", CultureInfo.InvariantCulture)},{SpindleSpeed.ToString("F0", CultureInfo.InvariantCulture)}");
-            var pins = (probePin ? "P" : "") + EffectiveLimits + (doorPin ? "D" : "");
+            var pins = (ProbeAt(position) ? "P" : "") + EffectiveLimits + (doorPin ? "D" : "");
             if (pins.Length != 0) text.Append("|Pn:" + pins);
             if (statusCounter++ % (state is "Run" or "Jog" ? 30 : 10) == 0) text.Append("|WCO:" + Wco.Format(Inches));
             else
@@ -378,8 +386,33 @@ public sealed partial class GrblController
     public MachineSnapshot Snapshot()
     {
         lock (gate) return new(state, position, position - Wco, modal.Position, currentFeed, SpindleSpeed, feedOverride, rapidOverride, spindleOverride,
-            planner.Count, probePin, EffectiveLimits, doorPin, actualSpindle, actualCoolant, ParserReport(), new Vec(Setting(130),Setting(131),Setting(132)));
+            planner.Count, ProbeAt(position), EffectiveLimits, doorPin, actualSpindle, actualCoolant, ParserReport(), new Vec(Setting(130),Setting(131),Setting(132)),Math.Clamp(Memory.MaterialThickness,0,Setting(132)),materialProbeEnabled,SurfaceDeltaAt(position),PhysicalPosition);
     }
+    public void ConfigureWorkpiece(double thickness,bool probingEnabled)
+    {
+        lock(gate)
+        {
+            if(!double.IsFinite(thickness) || thickness<0 || thickness>Setting(132)) throw new ArgumentOutOfRangeException(nameof(thickness));
+            Memory.MaterialThickness=thickness;Memory.MaterialProbeEnabled=probingEnabled;materialProbeEnabled=probingEnabled;Save();
+        }
+    }
+    public SurfaceProfile SurfaceSnapshot(){lock(gate)return Memory.Surface.Copy();}
+    public void ConfigureSurface(SurfaceProfile profile)
+    {
+        lock(gate)
+        {
+            if(!Enum.IsDefined(profile.Coordinates) || profile.Columns<2 || profile.Columns>21 || profile.Rows<2 || profile.Rows>21 || profile.Values.Length!=profile.Columns*profile.Rows || !double.IsFinite(profile.X+profile.Y+profile.Width+profile.Height+profile.Amplitude) || profile.Width<0 || profile.Height<0 || profile.Width>Setting(130) || profile.Height>Setting(131) || profile.Amplitude<0 || profile.Amplitude>10 || profile.Values.Any(v=>!double.IsFinite(v) || Math.Abs(v)>profile.Amplitude+1e-9))throw new ArgumentOutOfRangeException(nameof(profile));
+            Memory.Surface=profile.Copy();Save();
+        }
+    }
+    private double SurfaceDeltaAt(Vec p)
+    {
+        var origin=Memory.Surface.Coordinates switch {SurfaceCoordinates.Work=>Wco,SurfaceCoordinates.Machine=>default(Vec),_=> (physicalOffset+new Vec(Setting(130),Setting(131),0)) * -1};
+        var point=p-origin;
+        var maximum=Memory.Surface.Coordinates==SurfaceCoordinates.Table ? new Vec(Setting(130),Setting(131),0) : (physicalOffset+origin)*-1;
+        return Memory.Surface.Delta(point.X,point.Y,maximum.X,maximum.Y);
+    }
+    private double? ProbeSurface(Vec p) => materialProbeEnabled ? -Setting(132)-physicalOffset.Z+Math.Clamp(Memory.MaterialThickness+SurfaceDeltaAt(p),0,Setting(132)) : probePlane;
     public void SetProbe(bool active) { lock (gate) probePin = active; }
     public void SetProbePlane(double? machineZ) { lock (gate) probePlane = machineZ; }
     public void SetLimits(string activeAxes)
@@ -388,7 +421,7 @@ public sealed partial class GrblController
         {
             limits = string.Concat("XYZ".Where(activeAxes.Contains));
             LimitsChanged?.Invoke(EffectiveLimits);
-            if (limits.Length > 0 && Setting(21) != 0 && state != "Home") Alarm(1);
+            if (EffectiveLimits.Length > 0 && Setting(21) != 0 && state != "Home") Alarm(1);
         }
     }
     public void SetDoor(bool open)
@@ -465,13 +498,19 @@ public sealed partial class GrblController
             var next = nextProgress == 1 ? block.End : block.At(nextProgress);
             if (block.Probe && ProbeAt(next) == !block.ProbeAway)
             {
-                if (probePlane.HasValue && Math.Abs(next.Z - position.Z) > 1e-12)
-                    next = position + (next - position) * Math.Clamp((probePlane.Value - position.Z) / (next.Z - position.Z), 0, 1);
+                if(!probePin)
+                {
+                    var start=position;var end=next;double low=0,high=1;
+                    for(int i=0;i<40;i++){var middle=(low+high)/2;if(ProbeAt(start+(end-start)*middle)==!block.ProbeAway)high=middle;else low=middle;}
+                    next=start+(end-start)*high;
+                }
                 var segmentStart=position; position = Quantize(next); MotionAdvanced?.Invoke(new(segmentStart,position,block.Rapid)); PositionChanged?.Invoke(position);
+                if(UpdateTravelLimits()) return;
                 probePosition = position; probeSuccess = true; modal.Position = position;
                 planner.Dequeue(); EmitProbe(); state = "Idle"; currentFeed = 0; CompleteAck(); return;
             }
             block.Progress = nextProgress; var motionStart=position; position = Quantize(next); MotionAdvanced?.Invoke(new(motionStart,position,block.Rapid)); PositionChanged?.Invoke(position); seconds -= spent;
+            if(UpdateTravelLimits()) return;
             if (nextProgress < 1) { if (seconds > 1e-9) continue; return; }
             planner.Dequeue();
             if (block.Probe)
@@ -484,7 +523,7 @@ public sealed partial class GrblController
             if (planner.Count == 0) { state = "Idle"; currentFeed = velocity = 0; CompleteAck(); }
         }
     }
-    private bool ProbeAt(Vec p) => probePin || (probePlane.HasValue && p.Z <= probePlane.Value);
+    private bool ProbeAt(Vec p) => probePin || (ProbeSurface(p) is {} surface && p.Z <= surface);
     private Vec Quantize(Vec p)
     {
         for (int i = 0; i < 3; i++) if (Setting(100 + i) > 0) p = p.With(i, Math.Round(p[i] * Setting(100 + i), MidpointRounding.AwayFromZero) / Setting(100 + i));

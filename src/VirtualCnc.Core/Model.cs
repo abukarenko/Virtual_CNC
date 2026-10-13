@@ -25,6 +25,9 @@ public sealed class Eeprom
     public string[] Startup { get; set; } = ["", ""];
     public string BuildInfo { get; set; } = "";
     public bool TableWorkOriginInitialized { get; set; }
+    public double MaterialThickness { get; set; } = 20;
+    public bool MaterialProbeEnabled { get; set; } = true;
+    public SurfaceProfile Surface {get;set;}=new(){Coordinates=SurfaceCoordinates.Work};
     public static SortedDictionary<int, double> Defaults() => new()
     {
         [0]=10,[1]=25,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,
@@ -72,7 +75,7 @@ public sealed class MemoryStore(string? path)
 
 public sealed record MachineSnapshot(string State, Vec MachinePosition, Vec WorkPosition, Vec PlannedPosition,
     double Feed, double Spindle, int FeedOverride, int RapidOverride, int SpindleOverride, int Buffered,
-    bool Probe, string Limits, bool Door, int SpindleMode, int Coolant, string Parser, Vec MaxTravel = default);
+    bool Probe, string Limits, bool Door, int SpindleMode, int Coolant, string Parser, Vec MaxTravel = default, double MaterialThickness = 0, bool MaterialProbeEnabled = false, double SurfaceDelta = 0, Vec? PhysicalPosition = null);
 
 internal sealed class Modal
 {

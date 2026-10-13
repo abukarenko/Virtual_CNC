@@ -169,6 +169,89 @@ Test("table origin setup persists once and survives hard reset",()=>{
     var file=Path.Combine(Path.GetTempPath(),"VirtualCncOrigin-"+Guid.NewGuid()+".json");
     try {var r=new Rig(file);r.Engine.InitializeTableWorkOrigin();Ok(r,"G10L2P1X-90Y-70");var next=new Rig(file);next.Engine.InitializeTableWorkOrigin();next.Engine.HardReset();Equal(new Vec(-90,-70,0),next.Engine.Memory.Coordinates[0]);}finally{if(File.Exists(file))File.Delete(file);}
 });
+Test("manual limit releases without latching and homing finishes clear",()=>{
+    var r=New();Ok(r,"$21=1");Ok(r,"$22=1");r.Engine.SetLimits("X");Equal("Alarm",r.Engine.Snapshot().State);r.Engine.SetLimits("");Equal("",r.Engine.Snapshot().Limits);
+    r.Engine.Receive(new byte[]{0x18});r.Send("$H");r.Finish();Equal("Idle",r.Engine.Snapshot().State);Equal("",r.Engine.Snapshot().Limits);
+});
+Test("automatic travel switch clears after returning inside with hard limits disabled",()=>{
+    var r=New();Ok(r,"G0X1");r.Finish();Equal("X",r.Engine.Snapshot().Limits);r.Engine.SetLimits("Y");Equal("XY",r.Engine.Snapshot().Limits);r.Engine.SetLimits("");Equal("X",r.Engine.Snapshot().Limits);
+    Ok(r,"G0X-1");r.Finish();Equal("",r.Engine.Snapshot().Limits);
+});
+Test("automatic travel switch stops at first step outside with hard limits enabled",()=>{
+    var r=New();Ok(r,"$21=1");Ok(r,"G0X10");r.Finish();var s=r.Engine.Snapshot();Equal("Alarm",s.State);Equal("X",s.Limits);Equal(true,s.MachinePosition.X>0 && s.MachinePosition.X<1);Equal(true,r.Output.Contains("ALARM:1"));
+    r.Engine.HardReset();Equal("",r.Engine.Snapshot().Limits);
+});
+Test("automatic lower travel switch clears after homing pull off",()=>{
+    var r=New();Ok(r,"$130=10");Ok(r,"G0X-11");r.Finish();Equal("X",r.Engine.Snapshot().Limits);Ok(r,"$22=1");Ok(r,"$23=3");r.Send("$H");r.Finish();Equal("Idle",r.Engine.Snapshot().State);Equal("",r.Engine.Snapshot().Limits);
+});
+Test("negative Z jog after home stays inside soft limits; bottom-zero G54 reports positive height",()=>{
+    var r=New();Ok(r,"$132=120");Ok(r,"$27=5");Ok(r,"$22=1");Ok(r,"$20=1");r.Send("$H");r.Finish();Equal(-5.0,r.Engine.Snapshot().MachinePosition.Z);
+    Ok(r,"$J=G91Z-5F100");r.Finish();Equal(-10.0,r.Engine.Snapshot().MachinePosition.Z);Equal("Idle",r.Engine.Snapshot().State);
+    Ok(r,"G10L2P1Z-120");Equal(110.0,r.Engine.Snapshot().WorkPosition.Z);r.Send("$H");r.Finish();Equal(115.0,r.Engine.Snapshot().WorkPosition.Z);Equal(-5.0,r.Engine.Snapshot().MachinePosition.Z);
+});
+Test("application cold boot reports machine and work zero until successful home",()=>{
+    var file=Path.Combine(Path.GetTempPath(),"VirtualCncBoot-"+Guid.NewGuid()+".json");
+    try {
+        var first=new Rig(file);Ok(first,"$22=1");Ok(first,"$23=3");Ok(first,"$27=5");Ok(first,"$130=530");Ok(first,"$131=350");first.Engine.InitializeTableWorkOrigin();Ok(first,"G10L2P1Z-50");
+        var r=new Rig(file);var s=r.Engine.Snapshot();Equal(default(Vec),s.MachinePosition);Equal(default(Vec),s.WorkPosition);r.Send("?");Equal(true,r.Output.Any(line=>line.Contains("WCO:0.000,0.000,0.000")));
+        r.Send("$H");r.Finish();s=r.Engine.Snapshot();Equal(new Vec(-525,-345,-5),s.MachinePosition);Equal(new Vec(5,5,45),s.WorkPosition);
+        r.Engine.HardReset();s=r.Engine.Snapshot();Equal(default(Vec),s.MachinePosition);Equal(default(Vec),s.WorkPosition);Equal(new Vec(-530,-350,-50),r.Engine.Memory.Coordinates[0]);
+    } finally {if(File.Exists(file))File.Delete(file);}
+});
+Test("prehome relative jog remains consistent with displayed coordinates",()=>{
+    var r=New();r.Engine.InitializeTableWorkOrigin();r.Engine.HardReset();Ok(r,"$J=G91X-5F100");r.Finish();Equal(new Vec(-5,0,0),r.Engine.Snapshot().MachinePosition);Equal(new Vec(-5,0,0),r.Engine.Snapshot().WorkPosition);
+});
+Test("workpiece thickness sets exact probe plane relative to table",()=>{
+    var r=New();Ok(r,"$132=120");r.Engine.ConfigureWorkpiece(20,true);r.Send("G38.2Z-120F600");r.Finish();
+    Near(-100,r.Engine.Snapshot().MachinePosition.Z);Equal(true,r.Engine.Snapshot().Probe);Equal(true,r.Output.Contains("[PRB:0.000,0.000,-100.000:1]"));Ok(r,"G92Z0");Equal(0.0,r.Engine.Snapshot().WorkPosition.Z);
+});
+Test("material probe can be disabled and follows changed Z travel",()=>{
+    var r=New();Ok(r,"$132=85");r.Engine.ConfigureWorkpiece(20,true);r.Send("G38.2Z-85F600");r.Finish();Near(-65,r.Engine.Snapshot().MachinePosition.Z);
+    Ok(r,"G0Z-3");r.Finish();r.Engine.ConfigureWorkpiece(20,false);r.Send("G38.3Z-85F600");r.Finish();Near(-85,r.Engine.Snapshot().MachinePosition.Z);Equal(false,r.Engine.Snapshot().Probe);
+});
+Test("material probing respects work offsets and soft limits",()=>{
+    var r=New();Ok(r,"$22=1");Ok(r,"$20=1");r.Send("$H");r.Finish();Ok(r,"G10L2P1Z-150");r.Engine.ConfigureWorkpiece(20,true);r.Send("G38.2Z-50F600");r.Finish();Near(-180,r.Engine.Snapshot().MachinePosition.Z);Equal("Idle",r.Engine.Snapshot().State);Ok(r,"G92Z0");Equal(0.0,r.Engine.Snapshot().WorkPosition.Z);
+});
+Test("bilinear surface interpolates signed nodes in table coordinates",()=>{
+    var profile=new SurfaceProfile{Enabled=true,X=10,Y=20,Width=100,Height=80,Rows=2,Columns=2,Amplitude=2,Values=new double[]{0,1,-1,2}};
+    Near(.5,profile.Delta(60,60,560,335));Near(2,profile.Delta(110,100,560,335));Near(0,profile.Delta(9,60,560,335));profile.Enabled=false;Near(0,profile.Delta(110,100,560,335));
+});
+Test("heightmap probing reports different heights at multiple grid points",()=>{
+    var r=New();Ok(r,"$130=100");Ok(r,"$131=100");Ok(r,"$132=85");r.Engine.ConfigureWorkpiece(15,true);
+    r.Engine.ConfigureSurface(new SurfaceProfile{Enabled=true,Width=100,Height=100,Rows=2,Columns=2,Amplitude=2,Values=new double[]{-1,1,-1,1}});
+    foreach(var sample in new[]{(X:-100.0,Z:-71.0),(X:-50.0,Z:-70.0),(X:0.0,Z:-69.0)}){
+        Ok(r,"G0Z-3");r.Finish();Ok(r,$"G0X{sample.X}Y-50");r.Finish();r.Send("G38.2Z-80F600");r.Finish();Near(sample.Z,r.Engine.Snapshot().MachinePosition.Z);Equal("Idle",r.Engine.Snapshot().State);
+    }
+});
+Test("surface profile is saved and does not alias caller or snapshot",()=>{
+    var file=Path.Combine(Path.GetTempPath(),"VirtualCncSurface-"+Guid.NewGuid()+".json");
+    try{var r=new Rig(file);var p=new SurfaceProfile{Enabled=true,Amplitude=1};p.Generate(42);r.Engine.ConfigureSurface(p);var expected=p.Values[6];p.Values[6]=0;var next=new Rig(file);Near(expected,next.Engine.SurfaceSnapshot().Values[6]);var copy=next.Engine.SurfaceSnapshot();copy.Values[6]=0;Near(expected,next.Engine.SurfaceSnapshot().Values[6]);}finally{if(File.Exists(file))File.Delete(file);}
+});
+Test("generated relief stays signed bounded and has flat boundary",()=>{var p=new SurfaceProfile{Amplitude=10};p.Generate(7);Equal(true,p.Values.Any(v=>v>0));Equal(true,p.Values.Any(v=>v<0));Equal(true,p.Values.All(v=>Math.Abs(v)<=10));Near(0,p.Values[0]);Near(0,p.Values[^1]);});
+Test("startup physical spindle is centered while both counters remain zero",()=>{
+    var r=New();r.Engine.InitializeTableWorkOrigin();r.Engine.Boot(); // Boot cannot reposition an already booted controller.
+    var file=Path.Combine(Path.GetTempPath(),"VirtualCncCenter-"+Guid.NewGuid()+".json");
+    try{var first=new Rig(file);Ok(first,"$130=530");Ok(first,"$131=350");Ok(first,"$132=120");first.Engine.InitializeTableWorkOrigin();var next=new Rig(file);var s=next.Engine.Snapshot();Equal(default(Vec),s.MachinePosition);Equal(default(Vec),s.WorkPosition);Equal(new Vec(-265,-175,-60),s.PhysicalPosition!.Value);
+        Ok(next,"$J=G91X-5F600");next.Finish();Equal(new Vec(-270,-175,-60),next.Engine.Snapshot().PhysicalPosition!.Value);next.Engine.HardReset();s=next.Engine.Snapshot();Equal(default(Vec),s.MachinePosition);Equal(new Vec(-270,-175,-60),s.PhysicalPosition!.Value);
+        Ok(next,"$22=1");Ok(next,"$23=3");next.Send("$H");s=next.Engine.Snapshot();Equal(new Vec(-270,-175,-60),s.PhysicalPosition!.Value);next.Finish();s=next.Engine.Snapshot();Equal(s.MachinePosition,s.PhysicalPosition!.Value);Equal(new Vec(-529,-349,-1),s.MachinePosition);
+    }finally{if(File.Exists(file))File.Delete(file);}
+});
+Test("work heightmap negative XY follows G92 and G54 G55 offsets",()=>{
+    var r=New();Ok(r,"$132=85");r.Engine.ConfigureWorkpiece(15,true);Ok(r,"G0X-100Y-100Z-3");r.Finish();Ok(r,"G92X0Y0");
+    r.Engine.ConfigureSurface(new SurfaceProfile{Coordinates=SurfaceCoordinates.Work,Enabled=true,X=-50,Y=-50,Width=100,Height=100,Rows=2,Columns=2,Amplitude=2,Values=new double[]{-1,1,-1,1}});
+    foreach(var sample in new[]{(X:-50.0,Z:-71.0),(X:0.0,Z:-70.0),(X:50.0,Z:-69.0)}){Ok(r,"G0Z-3");r.Finish();Ok(r,$"G0X{sample.X}Y0");r.Finish();r.Send("G38.2Z-80F600");r.Finish();Near(sample.Z,r.Engine.Snapshot().MachinePosition.Z);Equal("Idle",r.Engine.Snapshot().State);}
+    Ok(r,"G0Z-3");r.Finish();Ok(r,"G92.1");Ok(r,"G10L2P1X-100Y-100");Ok(r,"G10L2P2X-110Y-100");Ok(r,"G54");Ok(r,"G0X0Y0");r.Finish();Near(0,r.Engine.Snapshot().SurfaceDelta);Ok(r,"G55");Near(.2,r.Engine.Snapshot().SurfaceDelta);Equal(-50.0,r.Engine.SurfaceSnapshot().X);
+});
+Test("machine heightmap stays fixed when work zero changes",()=>{
+    var r=New();Ok(r,"G0X-100Y-100");r.Finish();r.Engine.ConfigureSurface(new SurfaceProfile{Coordinates=SurfaceCoordinates.Machine,Enabled=true,X=-150,Y=-150,Width=100,Height=100,Rows=2,Columns=2,Amplitude=2,Values=new double[]{0,2,0,2}});Near(1,r.Engine.Snapshot().SurfaceDelta);Ok(r,"G92X0Y0");Near(1,r.Engine.Snapshot().SurfaceDelta);Ok(r,"G10L2P2X-110Y-100");Ok(r,"G55");Near(1,r.Engine.Snapshot().SurfaceDelta);
+});
+Test("surface coordinate mode and negative region survive EEPROM reload",()=>{
+    var file=Path.Combine(Path.GetTempPath(),"VirtualCncSurfaceMode-"+Guid.NewGuid()+".json");try{var r=new Rig(file);r.Engine.ConfigureSurface(new SurfaceProfile{Coordinates=SurfaceCoordinates.Work,X=-50,Y=-50,Width=100,Height=100});var next=new Rig(file);Equal(SurfaceCoordinates.Work,next.Engine.SurfaceSnapshot().Coordinates);Equal(-50.0,next.Engine.SurfaceSnapshot().X);}finally{if(File.Exists(file))File.Delete(file);}
+});
+Test("prehome travel resize keeps physical center and zero counters",()=>{
+    var r=New();r.Engine.InitializeTableWorkOrigin();r.Engine.HardReset(); // This rig already booted before application setup; use a fresh boot below.
+    var file=Path.Combine(Path.GetTempPath(),"VirtualCncResize-"+Guid.NewGuid()+".json");try{var saved=new Rig(file);saved.Engine.InitializeTableWorkOrigin();var fresh=new Rig(file);Ok(fresh,"$130=2");Ok(fresh,"$131=3");Ok(fresh,"$132=1");var s=fresh.Engine.Snapshot();Equal(new Vec(-1,-1.5,-.5),s.PhysicalPosition!.Value);Equal(default(Vec),s.MachinePosition);Equal(default(Vec),s.WorkPosition);Ok(fresh,"$22=1");Ok(fresh,"$23=7");Ok(fresh,"$27=0.1");fresh.Send("$H");fresh.Finish();Equal("Idle",fresh.Engine.Snapshot().State);}finally{if(File.Exists(file))File.Delete(file);}
+});
 Console.WriteLine($"\n{passed} passed; {failed} failed");
 return failed==0 ? 0 : 1;
 

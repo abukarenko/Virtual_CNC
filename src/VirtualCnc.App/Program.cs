@@ -54,7 +54,9 @@ internal static class Program
                 if(Option("--render-tab") is { } tab) {var tabs=preview.Controls.OfType<TableLayoutPanel>().Single().Controls.OfType<TabControl>().Single();tabs.SelectedIndex=int.Parse(tab,CultureInfo.InvariantCulture);Application.DoEvents();}
                 if(args.Contains("--render-demo"))
                 {
-                    engine.InitializeTableWorkOrigin();engine.Receive("$X\n");engine.Receive("G0X5Y5\n");
+                    engine.InitializeTableWorkOrigin();engine.Receive("$X\n");engine.Receive("$22=1\n$H\n");
+                    for(int i=0;i<20000 && engine.Snapshot().State=="Home";i++) engine.Tick(TimeSpan.FromSeconds(.1));
+                    engine.Receive("G0X5Y5\n");
                     for(int i=0;i<2000 && engine.Snapshot().State=="Run";i++) engine.Tick(TimeSpan.FromSeconds(.1));
                     engine.Receive("G1X120Y5F1800\nG1X120Y150\nG1X5Y150\nG1X5Y5\nG0X60Y70\n");
                     for(int i=0;i<2000 && engine.Snapshot().State=="Run";i++) engine.Tick(TimeSpan.FromSeconds(.1));

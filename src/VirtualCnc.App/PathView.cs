@@ -16,14 +16,15 @@ internal sealed class PathView : Control
     }
     public void UpdateScene(MachineSnapshot snapshot)
     {
-        current=snapshot.MachinePosition;workPosition=snapshot.WorkPosition;workOffset=current-workPosition; travelZ=Math.Max(1,snapshot.MaxTravel.Z);
+        current=snapshot.PhysicalPosition ?? snapshot.MachinePosition;workPosition=snapshot.WorkPosition;workOffset=current-workPosition; travelZ=Math.Max(1,snapshot.MaxTravel.Z);
         camera.SetTravel(snapshot.MaxTravel.X,snapshot.MaxTravel.Y);
         Invalidate();
     }
     public void Add(MotionSegment segment)
     {
         if(segment.Start==segment.End) return;
-        points.Add(segment);if(points.Count>20000) points.RemoveRange(0,10000);
+        // Keep the complete machining history until an explicit reset.
+        points.Add(segment);
     }
     public void Clear() { points.Clear(); Invalidate(); }
     public void FitMachine() { camera.Fit(); Invalidate(); }

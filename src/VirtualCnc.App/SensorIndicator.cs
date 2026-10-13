@@ -2,19 +2,30 @@ namespace VirtualCnc.App;
 
 internal sealed class SensorIndicator : Control
 {
-    private bool active;
+    private bool active, pressed;
+    private readonly bool momentary;
     private readonly Color activeColor;
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     public bool Active { get=>active; set {if(active==value)return;active=value;Invalidate();Changed?.Invoke();} }
     public event Action? Changed;
-    public SensorIndicator(string caption,Color color)
+    public event Action<bool>? PressChanged;
+    public SensorIndicator(string caption,Color color,bool momentary=false)
     {
-        Text=caption;activeColor=color;Dock=DockStyle.Fill;Margin=Padding.Empty;TabStop=true;Cursor=Cursors.Hand;
+        Text=caption;activeColor=color;this.momentary=momentary;Dock=DockStyle.Fill;Margin=Padding.Empty;TabStop=true;Cursor=Cursors.Hand;
         AccessibleName=caption;AccessibleRole=AccessibleRole.CheckButton;
         SetStyle(ControlStyles.Selectable|ControlStyles.UserPaint|ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer,true);
     }
-    protected override void OnClick(EventArgs e) {base.OnClick(e);Focus();Active=!Active;}
-    protected override void OnKeyDown(KeyEventArgs e) {base.OnKeyDown(e);if(e.KeyCode==Keys.Space){Active=!Active;e.Handled=true;}}
+    private void Press(bool value)
+    {
+        if(pressed==value)return;pressed=value;Active=value;PressChanged?.Invoke(value);
+    }
+    protected override void OnClick(EventArgs e) {base.OnClick(e);Focus();if(!momentary)Active=!Active;}
+    protected override void OnMouseDown(MouseEventArgs e) {base.OnMouseDown(e);if(momentary && e.Button==MouseButtons.Left){Focus();Capture=true;Press(true);}}
+    protected override void OnMouseUp(MouseEventArgs e) {base.OnMouseUp(e);if(momentary && e.Button==MouseButtons.Left){Press(false);Capture=false;}}
+    protected override void OnMouseCaptureChanged(EventArgs e) {base.OnMouseCaptureChanged(e);if(momentary && !Capture)Press(false);}
+    protected override void OnLostFocus(EventArgs e) {base.OnLostFocus(e);if(momentary){Press(false);Capture=false;}}
+    protected override void OnKeyDown(KeyEventArgs e) {base.OnKeyDown(e);if(e.KeyCode==Keys.Space){if(momentary)Press(true);else Active=!Active;e.Handled=true;}}
+    protected override void OnKeyUp(KeyEventArgs e) {base.OnKeyUp(e);if(momentary && e.KeyCode==Keys.Space){Press(false);e.Handled=true;}}
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);var square=new Rectangle((Width-24)/2,3,24,24);
