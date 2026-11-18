@@ -10,6 +10,13 @@ internal sealed class MainForm : Form
     private static readonly Color Background = Color.FromArgb(17, 23, 32), Surface = Color.FromArgb(27, 35, 47), TextColor = Color.FromArgb(225, 233, 242), Accent = Color.FromArgb(58, 206, 164);
     private readonly GrblController engine;
     private readonly SerialConnection serial;
+    private readonly TcpConnection tcp;
+    private bool connectionSettingsOpen;
+    private Func<bool> previewSuspended = () => false;
+    private string connectionType="COM", tcpHost="127.0.0.1";
+    private int tcpPort=7000;
+    private readonly Label connectionStatus = new() { AutoSize=true, Padding=new Padding(4,7,0,0) };
+    private readonly string connectionSettingsPath=Path.Combine(AppContext.BaseDirectory,"data","connection.json");
     private readonly ComboBox ports = new() { Width=120, DropDownStyle=ComboBoxStyle.DropDownList };
     private readonly Button connect = new() { Text="Подключить", Width=112, Height=30, FlatStyle=FlatStyle.Flat };
     private readonly ComboBox baud = new() { Width=100, DropDownStyle=ComboBoxStyle.DropDownList };
@@ -50,7 +57,17 @@ internal sealed class MainForm : Form
         using (var iconStream = typeof(MainForm).Assembly.GetManifestResourceStream("VirtualCnc.App.Icon.ico")!) appIcon = new Icon(iconStream);
         Icon = appIcon;
         serial = new(engine);
-        Text = "Virtual CNC — GRBL 1.1f"; MinimumSize = new Size(1000, 720); Size = new Size(1250, 850);
+        tcp = new(engine);
+        try
+        {
+            if (File.Exists(connectionSettingsPath))
+            {
+                var saved=System.Text.Json.JsonSerializer.Deserialize<Dictionary<string,string>>(File.ReadAllText(connectionSettingsPath));
+                if(saved is not null) {connectionType=saved.GetValueOrDefault("type","COM");tcpHost=saved.GetValueOrDefault("host","127.0.0.1");if(int.TryParse(saved.GetValueOrDefault("port"),out var savedPort)&&savedPort is >=1 and <=65535)tcpPort=savedPort;}
+            }
+        }
+        catch (Exception ex) when(ex is IOException or System.Text.Json.JsonException) {journal.Enqueue((ex.Message,Color.Salmon));}
+        Text = "Virtual CNC v1.1.1 — GRBL 1.1f"; MinimumSize = new Size(1000, 720); Size = new Size(1250, 850);
         StartPosition = FormStartPosition.CenterScreen; BackColor = Background; ForeColor = TextColor; Font = new Font("Segoe UI", 10);
         var root = new TableLayoutPanel { Dock=DockStyle.Fill, Padding=new Padding(12), ColumnCount=1, RowCount=5 };
         root.RowStyles.Add(new(SizeType.Absolute, 40)); root.RowStyles.Add(new(SizeType.Absolute, 100));
@@ -63,7 +80,9 @@ internal sealed class MainForm : Form
         ports.DropDown += (_,_) => RefreshPorts();
         header.Controls.Add(ports); header.Controls.Add(connect); header.Controls.Add(baud);
         var hardReset=Button("Hard reset", () => { engine.HardReset(); path.Clear(); }); hardReset.Width=112; hardReset.Margin=new Padding(0,2,0,0);
-        header.Controls.Add(hardReset); root.Controls.Add(header,0,0);
+        header.Controls.Add(hardReset);
+        header.Controls.Add(Button("Подключение…", ShowConnectionSettings));header.Controls.Add(connectionStatus);
+        root.Controls.Add(header,0,0);
         var dashboard = new TableLayoutPanel { Dock=DockStyle.Fill, BackColor=Surface, Padding=new Padding(8), ColumnCount=2, RowCount=3 };
         dashboard.ColumnStyles.Add(new(SizeType.Percent, 42)); dashboard.ColumnStyles.Add(new(SizeType.Percent, 58));
         dashboard.Controls.Add(state, 0, 0); dashboard.Controls.Add(coordinates, 1, 0); dashboard.SetRowSpan(coordinates, 2);
@@ -144,21 +163,25 @@ internal sealed class MainForm : Form
             row.Cells[1].Value = engine.Memory.Settings[int.Parse(row.Cells[0].Value!.ToString()![1..], CultureInfo.InvariantCulture)].ToString(CultureInfo.InvariantCulture);
         };
         settingsTab.Controls.Add(settings); tabs.TabPages.Add(settingsTab);
+        previewSuspended=()=>connectionSettingsOpen||tabs.SelectedTab==settingsTab;
         surfaceEditor=new(engine);var surfaceTab=new TabPage("Неровности / Heightmap");surfaceTab.Controls.Add(surfaceEditor);tabs.TabPages.Add(surfaceTab);root.Controls.Add(tabs, 0, 2);
         var entry = new TableLayoutPanel { Dock=DockStyle.Fill, ColumnCount=3, Padding=new Padding(0, 3, 0, 0), Margin=Padding.Empty };
         entry.ColumnStyles.Add(new(SizeType.Percent, 100)); entry.ColumnStyles.Add(new(SizeType.Absolute, 110)); entry.ColumnStyles.Add(new(SizeType.Absolute, 130));
         entry.Controls.Add(command); entry.Controls.Add(Button("Отправить", Submit)); entry.Controls.Add(Button("Статус (?)", () => engine.Receive("?")));
         root.Controls.Add(entry, 0, 3);
-        root.Controls.Add(new Label { Text="COM-пара: этот эмулятор → один порт; CNC-программа → второй порт. Локальные команды работают без COM.", Dock=DockStyle.Fill, AutoSize=true }, 0, 4);
+        root.Controls.Add(new Label { Text="COM: выберите порт пары. TCP: «Подключение…» → IP и порт → «Подключить». MilRunner подключается к этому TCP-серверу.", Dock=DockStyle.Fill, AutoSize=true }, 0, 4);
         connect.Click += (_, _) => Connect();
         command.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Submit(); } };
         engine.Output += OnOutput; engine.MotionAdvanced += OnMotion;
         engine.LimitsChanged += OnLimits;
         serial.Received += text => journal.Enqueue(("RX  " + text, Color.LightSkyBlue));
         serial.Fault += text => journal.Enqueue(("COM  " + text, Color.Salmon));
+        tcp.Received += text => journal.Enqueue(("TCP RX  "+text,Color.LightSkyBlue));
+        tcp.Fault += text => journal.Enqueue(("TCP  "+text,Color.Salmon));
+        tcp.Status += text => {journal.Enqueue((text,Accent));if(IsHandleCreated&&!IsDisposed)BeginInvoke((Action)(()=>connectionStatus.Text=text));};
         timer.Tick += (_, _) => UpdateMachine();
-        ApplyColors(root); RefreshPorts();
-        if (initialPort is not null) Shown += (_, _) => { ports.SelectedItem=initialPort; Connect(); };
+        ApplyColors(root); RefreshPorts();UpdateConnectionControls();
+        if (initialPort is not null) Shown += (_, _) => { connectionType="COM";ports.SelectedItem=initialPort; Connect(); };
         engine.Boot(); previous = clock.Elapsed; timer.Start();
         trayMenu.Items.Add("Открыть Virtual CNC", null, (_, _) => RestoreFromTray());
         trayMenu.Items.Add(new ToolStripSeparator());
@@ -182,7 +205,7 @@ internal sealed class MainForm : Form
         {
             trayIcon.Visible = false; trayIcon.Dispose(); trayMenu.Dispose();
             appIcon.Dispose();
-            timer.Stop(); timer.Dispose(); engine.Output -= OnOutput; engine.MotionAdvanced -= OnMotion; engine.LimitsChanged -= OnLimits; serial.Dispose();
+            timer.Stop(); timer.Dispose(); engine.Output -= OnOutput; engine.MotionAdvanced -= OnMotion; engine.LimitsChanged -= OnLimits; serial.Dispose(); tcp.Dispose();
         };
     }
     private void RestoreFromTray()
@@ -215,16 +238,56 @@ internal sealed class MainForm : Form
         var selected = ports.Text; ports.Items.Clear(); ports.Items.AddRange(SerialPort.GetPortNames().Order().Cast<object>().ToArray());
         if (ports.Items.Contains(selected)) ports.SelectedItem=selected; else if (ports.Items.Count > 0) ports.SelectedIndex=0;
     }
+    private void UpdateConnectionControls()
+    {
+        bool open=serial.IsOpen||tcp.IsOpen;
+        ports.Visible=baud.Visible=connectionType!="TCP";
+        ports.Enabled=baud.Enabled=!open;
+        connect.Text=open ? "Отключить" : connectionType=="TCP" ? "Слушать TCP" : "Подключить";
+        connectionStatus.Text=connectionType=="TCP" ? $"TCP {tcpHost}:{tcpPort}" : "COM / Serial";
+    }
+    private void ShowConnectionSettings()
+    {
+        connectionSettingsOpen=true;
+        try
+        {
+            using var dialog=new Form {Text="Подключение Virtual CNC",Size=new Size(490,310),FormBorderStyle=FormBorderStyle.FixedDialog,MaximizeBox=false,MinimizeBox=false,StartPosition=FormStartPosition.CenterParent,BackColor=Background,ForeColor=TextColor};
+            var layout=new TableLayoutPanel {Dock=DockStyle.Fill,Padding=new Padding(16),ColumnCount=2,RowCount=5};
+            layout.ColumnStyles.Add(new(SizeType.Percent,40));layout.ColumnStyles.Add(new(SizeType.Percent,60));
+            var type=new ComboBox {DropDownStyle=ComboBoxStyle.DropDownList,Dock=DockStyle.Fill};type.Items.AddRange(new object[]{"COM","TCP"});type.SelectedItem=connectionType;
+            var host=new TextBox {Text=tcpHost,Dock=DockStyle.Fill};var port=new NumericUpDown {Minimum=1,Maximum=65535,Value=tcpPort,Dock=DockStyle.Fill};
+            layout.Controls.Add(new Label {Text="Тип подключения",AutoSize=true},0,0);layout.Controls.Add(type,1,0);
+            layout.Controls.Add(new Label {Text="IP сервера",AutoSize=true},0,1);layout.Controls.Add(host,1,1);
+            layout.Controls.Add(new Label {Text="TCP-порт",AutoSize=true},0,2);layout.Controls.Add(port,1,2);
+            var note=new Label {Text="127.0.0.1 — этот компьютер. 0.0.0.0 — все сетевые интерфейсы. Один клиент одновременно.",AutoSize=true,MaximumSize=new Size(430,60)};layout.Controls.Add(note,0,3);layout.SetColumnSpan(note,2);
+            var actions=new FlowLayoutPanel {AutoSize=true,FlowDirection=FlowDirection.RightToLeft,Dock=DockStyle.Fill};
+            var ok=new Button {Text="OK",DialogResult=DialogResult.None};var cancel=new Button {Text="Отмена",DialogResult=DialogResult.Cancel};actions.Controls.Add(ok);actions.Controls.Add(cancel);layout.Controls.Add(actions,0,4);layout.SetColumnSpan(actions,2);
+            bool open=serial.IsOpen||tcp.IsOpen;type.Enabled=host.Enabled=port.Enabled=!open;
+            ok.Click+=(_,_)=>{
+                if(type.Text=="TCP"&&!System.Net.IPAddress.TryParse(host.Text.Trim(),out _)){MessageBox.Show(dialog,"Укажите локальный IP-адрес.");return;}
+                try {Directory.CreateDirectory(Path.GetDirectoryName(connectionSettingsPath)!);File.WriteAllText(connectionSettingsPath,System.Text.Json.JsonSerializer.Serialize(new Dictionary<string,string>{{"type",type.Text},{"host",host.Text.Trim()},{"port",port.Value.ToString(CultureInfo.InvariantCulture)}}));}
+                catch(Exception ex) when(ex is IOException or UnauthorizedAccessException){MessageBox.Show(dialog,ex.Message);return;}
+                connectionType=type.Text;tcpHost=host.Text.Trim();tcpPort=(int)port.Value;dialog.DialogResult=DialogResult.OK;
+            };
+            dialog.Controls.Add(layout);dialog.AcceptButton=ok;dialog.CancelButton=cancel;ApplyColors(layout);dialog.ShowDialog(this);UpdateConnectionControls();
+        }
+        finally {connectionSettingsOpen=false;RefreshPreview();}
+    }
     private void Connect()
     {
         try
         {
-            if (serial.IsOpen) { serial.Close(); connect.Text="Подключить"; ports.Enabled=baud.Enabled=true; return; }
-            if (ports.SelectedItem is null) { MessageBox.Show(this, "Создайте виртуальную COM-пару и откройте список портов.", "COM"); return; }
-            serial.Open(ports.Text,(int)baud.SelectedItem!); connect.Text="Отключить"; ports.Enabled=baud.Enabled=false;
+            if(serial.IsOpen||tcp.IsOpen){serial.Close();tcp.Close();UpdateConnectionControls();return;}
+            if(connectionType=="TCP") tcp.Open(tcpHost,tcpPort);
+            else
+            {
+                if(ports.SelectedItem is null){ShowConnectionSettings();return;}
+                serial.Open(ports.Text,(int)baud.SelectedItem!);
+            }
+            UpdateConnectionControls();
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
-        { MessageBox.Show(this, ex.Message, "Ошибка подключения", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        catch(Exception ex) when(ex is IOException or System.Net.Sockets.SocketException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+        {MessageBox.Show(this,ex.Message,"Ошибка подключения",MessageBoxButtons.OK,MessageBoxIcon.Error);}
     }
     private void SetOverride(int target,int current,byte up,byte down)
     {
@@ -271,8 +334,8 @@ internal sealed class MainForm : Form
             log.SelectionStart=log.TextLength; log.SelectionColor=item.Color; log.AppendText(item.Text + Environment.NewLine);
         }
         if (log.TextLength > 180000) { log.Select(0,90000); log.SelectedText=""; }
-        log.SelectionStart=log.TextLength; log.ScrollToCaret(); path.UpdateScene(snapshot);
+        log.SelectionStart=log.TextLength; log.ScrollToCaret(); if(!previewSuspended())path.UpdateScene(snapshot);
         if(material.Maximum!=(decimal)snapshot.MaxTravel.Z) {material.Maximum=(decimal)snapshot.MaxTravel.Z;if(material.Value>material.Maximum)material.Value=material.Maximum;}
-        zView.UpdateScene(snapshot);surfaceEditor.UpdateScene(snapshot);
+        if(!previewSuspended()){zView.UpdateScene(snapshot);surfaceEditor.UpdateScene(snapshot);}
     }
 }

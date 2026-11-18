@@ -15,6 +15,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VirtualCnc.Tests", "tests\V
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VirtualCnc.SerialProbe", "tests\VirtualCnc.SerialProbe\VirtualCnc.SerialProbe.csproj", "{81D91928-C9D6-4DB3-A069-8D87C90B3B47}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VirtualCnc.App.Tests", "tests\VirtualCnc.App.Tests\VirtualCnc.App.Tests.csproj", "{2E4F04AB-2A9A-40D7-B653-296E5524D25F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -73,6 +75,18 @@ Global
 		{81D91928-C9D6-4DB3-A069-8D87C90B3B47}.Release|x64.Build.0 = Release|Any CPU
 		{81D91928-C9D6-4DB3-A069-8D87C90B3B47}.Release|x86.ActiveCfg = Release|Any CPU
 		{81D91928-C9D6-4DB3-A069-8D87C90B3B47}.Release|x86.Build.0 = Release|Any CPU
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F}.Debug|x64.Build.0 = Debug|Any CPU
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F}.Debug|x86.Build.0 = Debug|Any CPU
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F}.Release|x64.ActiveCfg = Release|Any CPU
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F}.Release|x64.Build.0 = Release|Any CPU
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F}.Release|x86.ActiveCfg = Release|Any CPU
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -82,5 +96,6 @@ Global
 		{4223D7FB-45CD-48F7-86AB-EA03FF7942F2} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{6B0BD61A-3196-4C52-AF86-FA2659D5E483} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{81D91928-C9D6-4DB3-A069-8D87C90B3B47} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{2E4F04AB-2A9A-40D7-B653-296E5524D25F} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal
